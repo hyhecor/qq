@@ -5,27 +5,21 @@ import (
 	"io"
 )
 
-type RelationRender interface {
-	Select(w io.Writer, stmt statement)
-	From(w io.Writer, stmt statement)
-	Columns(w io.Writer, stmt statement)
-	Column(w io.Writer, stmt statement, col column)
-	Where(w io.Writer, stmt statement)
-	Predicator(w io.Writer, stmt statement, cond Predicator)
-	LogicalOp(w io.Writer, stmt statement, cond LogicalOp)
-	ComparisonOp(w io.Writer, stmt statement, cond ComparisonOp)
+type Render interface {
+	Select(w io.Writer, stmt Statement)
 }
 
 type SQLServerRender struct{}
 
-func (render SQLServerRender) Select(w io.Writer, stmt statement) {
+func (render SQLServerRender) Select(w io.Writer, stmt Statement) {
 	fmt.Fprint(w, "SELECT ")
 	render.Columns(w, stmt)
 	render.From(w, stmt)
 	render.Where(w, stmt)
+	render.OrderBy(w, stmt)
 }
 
-func (render SQLServerRender) From(w io.Writer, stmt statement) {
+func (render SQLServerRender) From(w io.Writer, stmt Statement) {
 	fmt.Fprint(w, " FROM ")
 	fmt.Fprint(w, stmt.table.Name)
 
@@ -35,19 +29,24 @@ func (render SQLServerRender) From(w io.Writer, stmt statement) {
 	}
 }
 
-func (render SQLServerRender) Columns(w io.Writer, stmt statement) {
+func (render SQLServerRender) Columns(w io.Writer, stmt Statement) {
+
+	if len(stmt.columns) == 0 {
+		stmt.columns = []ColumnEntity{{Name: "*"}}
+	}
+
 	for i := range stmt.columns {
 		if 0 < i {
 			fmt.Fprint(w, ", ")
 		}
-		render.Column(w, stmt, stmt.columns[i])
+		render.Column(w, stmt.columns[i])
+		render.ColumnAlias(w, stmt.columns[i])
 	}
 }
 
-func (render SQLServerRender) Column(w io.Writer, stmt statement, col column) {
+func (render SQLServerRender) Column(w io.Writer, col ColumnEntity) {
 
 	switch {
-
 	case col.Table != nil && col.Table.Alias.Valid:
 		fmt.Fprint(w, col.Table.Alias.String)
 		fmt.Fprint(w, ".")
@@ -61,33 +60,38 @@ func (render SQLServerRender) Column(w io.Writer, stmt statement, col column) {
 	case col.Table == nil:
 		fmt.Fprint(w, col.Name)
 	}
+}
+
+func (render SQLServerRender) ColumnAlias(w io.Writer, col ColumnEntity) {
 
 	switch {
 	case col.Alias.Valid:
 		fmt.Fprint(w, " AS ")
 		fmt.Fprint(w, col.Alias.String)
 	}
-
 }
 
-func (render SQLServerRender) Where(w io.Writer, stmt statement) {
+func (render SQLServerRender) Where(w io.Writer, stmt Statement) {
+	if stmt.predicator == nil {
+		return
+	}
+
 	fmt.Fprint(w, " WHERE ")
-
-	render.Predicator(w, stmt, stmt.conditions)
+	render.Predicator(w, stmt.predicator)
 }
 
-func (render SQLServerRender) Predicator(w io.Writer, stmt statement, predicator Predicator) {
+func (render SQLServerRender) Predicator(w io.Writer, predicator Predicator) {
 
 	switch v := predicator.(type) {
-	case ComparisonOp:
-		render.ComparisonOp(w, stmt, v)
+	case ComparisonExpression:
+		render.ComparisonOp(w, v)
 
-	case LogicalOp:
-		render.LogicalOp(w, stmt, v)
+	case LogicalExpression:
+		render.LogicalOp(w, v)
 	}
 }
 
-func (render SQLServerRender) LogicalOp(w io.Writer, stmt statement, cond LogicalOp) {
+func (render SQLServerRender) LogicalOp(w io.Writer, cond LogicalExpression) {
 
 	switch cond.Op {
 	case "and":
@@ -96,7 +100,7 @@ func (render SQLServerRender) LogicalOp(w io.Writer, stmt statement, cond Logica
 				fmt.Fprint(w, " AND ")
 			}
 
-			render.Predicator(w, stmt, cond.Predicators[i])
+			render.Predicator(w, cond.Predicators[i])
 		}
 	case "or":
 		for i := range cond.Predicators {
@@ -104,7 +108,7 @@ func (render SQLServerRender) LogicalOp(w io.Writer, stmt statement, cond Logica
 				fmt.Fprint(w, " OR ")
 			}
 
-			render.Predicator(w, stmt, cond.Predicators[i])
+			render.Predicator(w, cond.Predicators[i])
 		}
 	case "not":
 		if len(cond.Predicators) == 0 {
@@ -112,18 +116,19 @@ func (render SQLServerRender) LogicalOp(w io.Writer, stmt statement, cond Logica
 		}
 
 		fmt.Fprint(w, "NOT ")
-		render.Predicator(w, stmt, cond.Predicators[0])
+		render.Predicator(w, cond.Predicators[0])
 
 	}
 }
-func (render SQLServerRender) ComparisonOp(w io.Writer, stmt statement, cond ComparisonOp) {
+
+func (render SQLServerRender) ComparisonOp(w io.Writer, cond ComparisonExpression) {
 	switch cond.Op {
 	case "equal":
 		if len(cond.Param) != 1 {
 			panic(fmt.Errorf("%s: expected param count is %d", cond.Op, 1))
 		}
 
-		render.Column(w, stmt, cond.Column)
+		render.Column(w, cond.Column)
 		fmt.Fprintf(w, " = @%s", cond.Param[0])
 
 	case "greater_than":
@@ -131,7 +136,7 @@ func (render SQLServerRender) ComparisonOp(w io.Writer, stmt statement, cond Com
 			panic(fmt.Errorf("%s: expected param count is %d", cond.Op, 1))
 		}
 
-		render.Column(w, stmt, cond.Column)
+		render.Column(w, cond.Column)
 		fmt.Fprintf(w, " > @%s", cond.Param[0])
 
 	case "less_than":
@@ -139,7 +144,7 @@ func (render SQLServerRender) ComparisonOp(w io.Writer, stmt statement, cond Com
 			panic(fmt.Errorf("%s: expected param count is %d", cond.Op, 1))
 		}
 
-		render.Column(w, stmt, cond.Column)
+		render.Column(w, cond.Column)
 		fmt.Fprintf(w, " < @%s", cond.Param[0])
 
 	case "greater_than_or_equal":
@@ -147,7 +152,7 @@ func (render SQLServerRender) ComparisonOp(w io.Writer, stmt statement, cond Com
 			panic(fmt.Errorf("%s: expected param count is %d", cond.Op, 1))
 		}
 
-		render.Column(w, stmt, cond.Column)
+		render.Column(w, cond.Column)
 		fmt.Fprintf(w, " >= @%s", cond.Param[0])
 
 	case "less_than_or_equal":
@@ -155,7 +160,7 @@ func (render SQLServerRender) ComparisonOp(w io.Writer, stmt statement, cond Com
 			panic(fmt.Errorf("%s: expected param count is %d", cond.Op, 1))
 		}
 
-		render.Column(w, stmt, cond.Column)
+		render.Column(w, cond.Column)
 		fmt.Fprintf(w, " <= @%s", cond.Param[0])
 
 	case "between":
@@ -163,7 +168,7 @@ func (render SQLServerRender) ComparisonOp(w io.Writer, stmt statement, cond Com
 			panic(fmt.Errorf("%s: expected param count is %d", cond.Op, 2))
 		}
 
-		render.Column(w, stmt, cond.Column)
+		render.Column(w, cond.Column)
 		fmt.Fprintf(w, " BETWEEN @%s AND @%s", cond.Param[0], cond.Param[1])
 
 	case "in":
@@ -171,7 +176,7 @@ func (render SQLServerRender) ComparisonOp(w io.Writer, stmt statement, cond Com
 			panic(fmt.Errorf("%s: expected param count is %d", cond.Op, 1))
 		}
 
-		render.Column(w, stmt, cond.Column)
+		render.Column(w, cond.Column)
 		fmt.Fprint(w, " IN (")
 		for i := range cond.Param {
 			if 0 < i {
@@ -182,5 +187,30 @@ func (render SQLServerRender) ComparisonOp(w io.Writer, stmt statement, cond Com
 		}
 
 		fmt.Fprint(w, ")")
+	}
+}
+
+func (render SQLServerRender) OrderBy(w io.Writer, stmt Statement) {
+
+	for i := range stmt.orders {
+		if i == 0 {
+			fmt.Fprint(w, " ORDER BY ")
+		}
+
+		if 0 < i {
+			fmt.Fprint(w, ", ")
+		}
+
+		item := stmt.orders[i]
+
+		switch item.Op {
+		case "ascending":
+			render.Column(w, stmt.columns[i])
+			fmt.Fprint(w, " ASC")
+
+		case "desending":
+			render.Column(w, stmt.columns[i])
+			fmt.Fprint(w, " DESC")
+		}
 	}
 }

@@ -1,9 +1,9 @@
 package qq
 
 const (
-	DialectSQLServer Dialect = "sqlserver"
-	DialectSQLite3   Dialect = "sqlite3" /* implemented yet */
-	DialectMySQL     Dialect = "mysql"   /* implemented yet */
+	DialectSQLServer dialect = "sqlserver"
+	DialectSQLite3   dialect = "sqlite3" /* implemented yet */
+	DialectMySQL     dialect = "mysql"   /* implemented yet */
 )
 
-type Dialect string
+type dialect string
