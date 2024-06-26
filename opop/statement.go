@@ -1,9 +1,8 @@
 package qq
 
 import (
-	"bytes"
-
 	"github.com/hyhecor/qq/opop/models"
+	"github.com/hyhecor/qq/opop/render"
 )
 
 const (
@@ -12,38 +11,9 @@ const (
 	DialectMySQL     models.Dialect = "mysql"   /* implemented yet */
 )
 
-type Statement struct {
-	Mode       Mode
-	Dialect    models.Dialect
-	Painter    Painter
-	Table      *models.Table
-	Columns    []models.Column
-	Predicator models.Predicator
-	Orders     []models.OrderByExpression
-}
-
-func (stmt Statement) Render() string {
-	var buf bytes.Buffer
-
-	switch stmt.Mode {
-	case ModeSelect:
-		stmt.Painter.Select(&buf, stmt)
-	}
-
-	return buf.String()
-}
-
-type Mode int
-
-const (
-	ModeSelect Mode = iota
-)
-
-type StatementOp = func(*Statement)
-
-func Select(ops ...StatementOp) Statement {
-	stmt := Statement{
-		Mode: ModeSelect,
+func Select(ops ...models.StatementOp) models.Statement {
+	stmt := models.Statement{
+		Mode: models.ModeSelect,
 	}
 
 	for _, op := range ops {
@@ -52,12 +22,12 @@ func Select(ops ...StatementOp) Statement {
 	return stmt
 }
 
-func Dialect(dialect models.Dialect) StatementOp {
-	return func(s *Statement) {
+func Dialect(dialect models.Dialect) models.StatementOp {
+	return func(s *models.Statement) {
 
 		switch dialect {
 		case DialectSQLServer:
-			s.Painter = new(SQLServerRender)
+			s.Painter = new(render.SQLServerPainter)
 		default:
 			panic("unsupported dialect")
 		}
@@ -66,9 +36,9 @@ func Dialect(dialect models.Dialect) StatementOp {
 	}
 }
 
-func From(table models.Table) StatementOp {
-	return func(s *Statement) {
-		s.Table = &table
+func From(table models.Table) models.StatementOp {
+	return func(s *models.Statement) {
+		s.From = &table
 	}
 }
 
@@ -92,10 +62,9 @@ func TableAlias(alias string) TableOp {
 	}
 }
 
-func Columns(columns ...models.Column) StatementOp {
-	return func(s *Statement) {
-		s.Columns = make([]models.Column, 0, len(columns))
-		s.Columns = append(s.Columns, columns...)
+func Columns(columns ...models.ColumnIndentifier) models.StatementOp {
+	return func(s *models.Statement) {
+		s.Columns = columns
 	}
 }
 
@@ -108,6 +77,14 @@ func Column(name string, ops ...ColumnOp) models.Column {
 		fn(&col)
 	}
 	return col
+}
+
+func Literal(expression string) models.Literal {
+	literal := models.Literal{
+		Expression: expression,
+	}
+
+	return literal
 }
 
 type ColumnOp = func(*models.Column)
@@ -124,9 +101,9 @@ func ColunmAlias(alias string) ColumnOp {
 	}
 }
 
-func Where(conditions ...models.Predicator) StatementOp {
-	return func(s *Statement) {
-		s.Predicator = And(conditions...)
+func Where(conditions ...models.ConditionIndentifier) models.StatementOp {
+	return func(s *models.Statement) {
+		s.Conditions = And(conditions...)
 	}
 }
 
@@ -140,7 +117,7 @@ var (
 
 func Equal(column models.Column, param string) models.ComparisonExpression {
 	return models.ComparisonExpression{
-		Op:     "equal",
+		Op:     models.Equal,
 		Column: column,
 		Param:  []string{param},
 	}
@@ -148,7 +125,7 @@ func Equal(column models.Column, param string) models.ComparisonExpression {
 
 func GreaterThan(column models.Column, param string) models.ComparisonExpression {
 	return models.ComparisonExpression{
-		Op:     "greater_than",
+		Op:     models.GreaterThan,
 		Column: column,
 		Param:  []string{param},
 	}
@@ -156,7 +133,7 @@ func GreaterThan(column models.Column, param string) models.ComparisonExpression
 
 func LessThan(column models.Column, param string) models.ComparisonExpression {
 	return models.ComparisonExpression{
-		Op:     "less_than",
+		Op:     models.LessThan,
 		Column: column,
 		Param:  []string{param},
 	}
@@ -164,7 +141,7 @@ func LessThan(column models.Column, param string) models.ComparisonExpression {
 
 func GreaterThanOrEqual(column models.Column, param string) models.ComparisonExpression {
 	return models.ComparisonExpression{
-		Op:     "greater_than_or_equal",
+		Op:     models.GreaterThanOrEqual,
 		Column: column,
 		Param:  []string{param},
 	}
@@ -172,7 +149,7 @@ func GreaterThanOrEqual(column models.Column, param string) models.ComparisonExp
 
 func LessThanOrEqual(column models.Column, param string) models.ComparisonExpression {
 	return models.ComparisonExpression{
-		Op:     "less_than_or_equal",
+		Op:     models.LessThanOrEqual,
 		Column: column,
 		Param:  []string{param},
 	}
@@ -180,7 +157,7 @@ func LessThanOrEqual(column models.Column, param string) models.ComparisonExpres
 
 func Between(column models.Column, from string, to string) models.ComparisonExpression {
 	return models.ComparisonExpression{
-		Op:     "between",
+		Op:     models.Between,
 		Column: column,
 		Param:  []string{from, to},
 	}
@@ -188,49 +165,80 @@ func Between(column models.Column, from string, to string) models.ComparisonExpr
 
 func In(column models.Column, param ...string) models.ComparisonExpression {
 	return models.ComparisonExpression{
-		Op:     "in",
+		Op:     models.In,
 		Column: column,
 		Param:  param,
 	}
 }
 
-func Not(value models.Predicator) models.LogicalExpression {
-	return models.LogicalExpression{
-		Op:          "not",
-		Predicators: []models.Predicator{value},
+func IsNull(column models.Column, param ...string) models.ComparisonExpression {
+	return models.ComparisonExpression{
+		Op:     models.IsNull,
+		Column: column,
+		Param:  param,
 	}
 }
 
-func And(condition ...models.Predicator) models.LogicalExpression {
+func Not(value models.ConditionIndentifier) models.LogicalExpression {
 	return models.LogicalExpression{
-		Op:          "and",
+		Op:          models.Not,
+		Predicators: []models.ConditionIndentifier{value},
+	}
+}
+
+func And(condition ...models.ConditionIndentifier) models.LogicalExpression {
+	return models.LogicalExpression{
+		Op:          models.And,
 		Predicators: condition,
 	}
 }
 
-func Or(condition ...models.Predicator) models.LogicalExpression {
+func Or(condition ...models.ConditionIndentifier) models.LogicalExpression {
 	return models.LogicalExpression{
-		Op:          "or",
+		Op:          models.Or,
 		Predicators: condition,
 	}
 }
 
-func Orders(orders ...models.OrderByExpression) StatementOp {
-	return func(s *Statement) {
+func Orders(orders ...models.OrderByExpression) models.StatementOp {
+	return func(s *models.Statement) {
 		s.Orders = orders
 	}
 }
 
 func Asc(column models.Column) models.OrderByExpression {
 	return models.OrderByExpression{
-		Op:     "ascending",
+		Op:     models.Ascending,
 		Column: column,
 	}
 }
 
 func Desc(column models.Column) models.OrderByExpression {
 	return models.OrderByExpression{
-		Op:     "desending",
+		Op:     models.Desending,
 		Column: column,
+	}
+}
+
+func Insert(ops ...models.StatementOp) models.Statement {
+	stmt := models.Statement{
+		Mode: models.ModeInsert,
+	}
+
+	for _, op := range ops {
+		op(&stmt)
+	}
+	return stmt
+}
+
+func Into(table models.Table) models.StatementOp {
+	return func(s *models.Statement) {
+		s.Into = &table
+	}
+}
+
+func Values(columns ...string) models.StatementOp {
+	return func(s *models.Statement) {
+		s.Values = columns
 	}
 }

@@ -1,4 +1,4 @@
-package qq
+package render
 
 import "github.com/hyhecor/qq/opop/models"
 
